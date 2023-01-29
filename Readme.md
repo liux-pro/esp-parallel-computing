@@ -15,3 +15,6 @@ I (1341) faster: 98.217346%
 ```
 
 98% faster compare to single core. Basically double the speed.
+
+# env
+IDF v5.0
