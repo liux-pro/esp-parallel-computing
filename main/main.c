@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include "string.h"
 #include <esp_attr.h>
+#include <esp_random.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
@@ -18,18 +19,18 @@ uint8_t rgb565_to_gray(uint16_t color) {
     return (uint8_t) ((red * 299 + green * 587 + blue * 114) / 1000);
 }
 
-void rgb565_to_gray_p(const uint16_t *color, uint8_t *gray) {
-    uint8_t red = (*color >> 11) & 0x1F;
-    uint8_t green = (*color >> 5) & 0x3F;
-    uint8_t blue = *color & 0x1F;
-    *gray = ((red * 299 + green * 587 + blue * 114) / 1000);
-}
 
 #define WIDTH (240)
 #define HEIGHT (240)
 #define SIZE (WIDTH*HEIGHT)
+/**
+ * 原始图像，rgb565彩色图片
+ */
 EXT_RAM_BSS_ATTR uint16_t image[SIZE] = {0};
- uint8_t gray_image[SIZE];
+/**
+ * 将其转为灰度图。
+ */
+uint8_t gray_image[SIZE];
 
 
 mbedtls_sha256_context sha256Context;
@@ -45,8 +46,8 @@ uint8_t sha256_1[32] = {0};
 TaskHandle_t taskHandle_core_0;
 TaskHandle_t taskHandle_core_1;
 
-// 91ms   888*888
-
+int64_t time_single_core;
+int64_t time_dual_core;
 
 
 void calc(int from, int to) {
@@ -55,14 +56,10 @@ void calc(int from, int to) {
     }
 }
 
-void calc_fast(int from, int to) {
-    for (int i = from; i < to; i++) {
-        rgb565_to_gray_p(image + i, gray_image + i);
-    }
-}
 
 /**
  * make sure this task pin to core 0
+ * 这个任务计算前半部分。
  * @param parm
  */
 void task_calc_core_0(void *parm) {
@@ -70,47 +67,60 @@ void task_calc_core_0(void *parm) {
         timeProbe_t timer;
         /////////////////////////////
         timeProbe_start(&timer);
+        //告诉另一个核心她也要开始计算了。
         xTaskNotifyGive(taskHandle_core_1);
+        //自己也计算。
         calc(0, SIZE / 2);
+        //等待另一个核心也计算完成。
         ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
-        ESP_LOGI("dual core calculate", "cost %f ms", (timeProbe_stop(&timer) / 1000.0));
+        time_dual_core = timeProbe_stop(&timer);
+        ESP_LOGI("dual core calculate", "cost %f ms", (time_dual_core / 1000.0));
         mbedtls_sha256(gray_image, SIZE, sha256_1, 0);
         ESP_LOGI("dual core calculate result sha256", "%0X %0X %0X %0X %0X", sha256_1[0], sha256_1[1], sha256_1[2],
                  sha256_1[3], sha256_1[4]);
         memset(gray_image, 0xaa, SIZE);
+        ESP_LOGI("faster", "%f%%",(1.0*time_single_core-time_dual_core)/time_dual_core*100);
+        while (1) {
+            vTaskDelay(pdMS_TO_TICKS(1000));
+        }
     }
 
 }
 
 /**
  * make sure this task pin to core 1
+ * 这个任务计算后半部分。
  * @param parm
  */
 void task_calc_core_1(void *parm) {
     while (1) {
+//        任务启动后，就装死，知道有人唤醒他
         ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
-        ESP_LOGI("11111111111111111", "222222222");
         calc(SIZE / 2, SIZE);
+        //算完后告诉主任务自己算完了
         xTaskNotifyGive(taskHandle_core_0);
     }
 
 }
 
 void app_main(void) {
-    for (int i = 0; i < SIZE; ++i) {
-        image[i] = rand();
-    }
+//    填充随机数
+    esp_fill_random(image, sizeof(image));
 
-    timeProbe_t timer;
+//用于以后计算hash
     mbedtls_sha256_init(&sha256Context);
+    timeProbe_t timer;
     timeProbe_start(&timer);
+//    完整地一次性单核计算完
     calc(0, SIZE);
-    ESP_LOGI("single core calculate", "cost %f ms", (timeProbe_stop(&timer) / 1000.0));
+    time_single_core = timeProbe_stop(&timer);
+    ESP_LOGI("single core calculate", "cost %f ms", (time_single_core / 1000.0));
     mbedtls_sha256(gray_image, SIZE, sha256_0, 0);
     ESP_LOGI("single core calculate result sha256", "%2X %2X %2X %2X %2X", sha256_0[0], sha256_0[1], sha256_0[2],
              sha256_0[3], sha256_0[4]);
     memset(gray_image, 0xaa, SIZE);
 ////////////////
+//  开启两个任务，并且分别绑定到两个核心上。
     xTaskCreatePinnedToCore(task_calc_core_0, "0", 4000, NULL, 1, &taskHandle_core_0, 0);
     xTaskCreatePinnedToCore(task_calc_core_1, "1", 4000, NULL, 1, &taskHandle_core_1, 1);
 }
