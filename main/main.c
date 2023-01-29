@@ -94,7 +94,7 @@ void task_calc_core_0(void *parm) {
  */
 void task_calc_core_1(void *parm) {
     while (1) {
-//        任务启动后，就装死，知道有人唤醒他
+//        任务启动后，就装死，直到有人唤醒他
         ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
         calc(SIZE / 2, SIZE);
         //算完后告诉主任务自己算完了
