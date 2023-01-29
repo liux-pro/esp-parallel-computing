@@ -18,3 +18,4 @@ I (1341) faster: 98.217346%
 
 # env
 IDF v5.0
+esp32s3 n16r8
